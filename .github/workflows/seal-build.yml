@@ -1,0 +1,87 @@
+name: seal-build
+
+# Build-and-pack only: the test suite runs on Travis (.travis.yml).
+on:
+  workflow_dispatch:
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '14.0.0'
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          # uglify-js 3.15.4 (latest before the 2022-04-17 release) reproduces the
+          # release-tag min/*.min.js byte-for-byte; the lockfile's 3.12.8 does not.
+          npm install --no-save --no-package-lock uglify-js@3.15.4
+
+      - name: Rebuild every shipped bundle from src/ (grunt release minus prettier-check)
+        run: ./node_modules/.bin/grunt exec:eslint exec:checkMonthsParseIssue test update-index component uglify:main
+
+      - name: Stage and pack
+        run: |
+          ./scripts/npm_prepublish.sh
+          npm pack ./output_build/
+          mkdir -p seal-dist
+          mv moment-*.tgz seal-dist/
+          ls -l seal-dist
+
+      - name: Check shipped bundles track src fixes
+        run: |
+          mkdir -p /tmp/packed
+          tar -xzf seal-dist/moment-*.tgz -C /tmp/packed
+          node - /tmp/packed/package <<'EOF'
+          var fs = require('fs');
+          var path = require('path');
+          var root = process.argv[2];
+          var bundles = ['moment.js', 'dist/moment.js', 'min/moment.min.js',
+              'min/moment-with-locales.js', 'min/moment-with-locales.min.js'];
+          var fromString = fs.readFileSync('src/lib/create/from-string.js', 'utf8');
+          var locales = fs.readFileSync('src/lib/locale/locales.js', 'utf8');
+          var OLD_LOCALE = "[^/\\\\\\\\]*$";
+          var NEW_LOCALE = '/^[a-z0-9]+(?:-[a-z0-9]+)*$/';
+          var OLD_RFC = '/\\([^)]*\\)|[\\n\\t]/g';
+          var NEW_RFC = '/\\([^()]*\\)|[\\n\\t]/g';
+          var checks = [
+              { cve: 'CVE-2026-17495', patched: locales.indexOf(OLD_LOCALE) === -1, oldM: OLD_LOCALE, newM: NEW_LOCALE },
+              { cve: 'CVE-2022-31129', patched: fromString.indexOf(OLD_RFC) === -1, oldM: OLD_RFC, newM: NEW_RFC },
+          ];
+          var failed = 0;
+          checks.forEach(function (c) {
+              console.log(c.cve + ': src is ' + (c.patched ? 'PATCHED' : 'UNPATCHED'));
+              bundles.forEach(function (b) {
+                  var s = fs.readFileSync(path.join(root, b), 'utf8');
+                  var hasOld = s.indexOf(c.oldM) !== -1;
+                  var hasNew = s.indexOf(c.newM) !== -1;
+                  var ok;
+                  if (c.patched) {
+                      var i = s.indexOf(c.newM);
+                      ok = hasNew && !hasOld;
+                      if (ok && c.cve === 'CVE-2026-17495') {
+                          ok = s.slice(Math.max(0, i - 60), i).indexOf('typeof') !== -1;
+                      }
+                  } else {
+                      ok = hasOld && !hasNew;
+                  }
+                  console.log('  ' + (ok ? 'OK  ' : 'FAIL') + ' ' + b + ' (old marker: ' + hasOld + ', fix marker: ' + hasNew + ')');
+                  if (!ok) failed++;
+              });
+          });
+          if (failed) {
+              console.error(failed + ' bundle check(s) failed: shipped bundles do not match src/');
+              process.exit(1);
+          }
+          console.log('All shipped bundles match the state of src/');
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: moment-tgz
+          path: seal-dist/moment-*.tgz
