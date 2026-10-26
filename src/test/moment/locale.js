@@ -91,6 +91,149 @@ test('library getters and setters', function (assert) {
 
     moment.locale('EN_gb');
     assert.equal(moment.locale(), 'en-gb', 'Normalize locale key underscore');
+    assert.equal(
+        indexOf.call(moment.locales(), 'EN_gb'),
+        -1,
+        'Do not cache the unnormalized locale key'
+    );
+    assert.equal(
+        indexOf.call(moment.locales(), 'en_gb'),
+        -1,
+        'Do not cache a partially normalized locale key'
+    );
+});
+
+test('preserve exact custom locale names', function (assert) {
+    moment.defineLocale('Mixed_Custom', { months: ['Movember'] });
+
+    assert.equal(
+        moment.localeData('Mixed_Custom')._abbr,
+        'Mixed_Custom',
+        'finds a custom locale before normalizing its name'
+    );
+    assert.equal(
+        moment.locale(),
+        'Mixed_Custom',
+        'sets a custom locale using its exact name'
+    );
+
+    moment.defineLocale('Mixed_Custom', null);
+});
+
+test('do not load invalid built-in locale names', function (assert) {
+    var invalidNames = ['.', '..', 'locale name', 'en@gb'];
+
+    each(invalidNames, function (name) {
+        moment.localeData(name);
+        assert.equal(
+            indexOf.call(moment.locales(), name),
+            -1,
+            'does not cache invalid locale name "' + name + '"'
+        );
+    });
+});
+
+function craftedLocaleName(payload) {
+    // Satisfies a `name.match(...)` check, survives normalization as a
+    // non-string and stringifies to a path when appended to './locale/'.
+    var crafted = {
+        match: function () {
+            return true;
+        },
+        toLowerCase: function () {
+            return crafted;
+        },
+        replace: function () {
+            return crafted;
+        },
+        split: function () {
+            return [payload];
+        },
+        toString: function () {
+            return payload;
+        },
+    };
+    return crafted;
+}
+
+test('do not load locales from crafted names in instance and update', function (assert) {
+    var localeCount = moment.locales().length;
+
+    assert.equal(
+        moment().locale(craftedLocaleName('../locale/kn')).locale(),
+        'en',
+        'instance locale is not changed'
+    );
+    assert.equal(
+        indexOf.call(moment.locales(), 'kn'),
+        -1,
+        'moment#locale does not require the "kn" module'
+    );
+
+    moment.updateLocale(craftedLocaleName('../locale/ug-cn'), {});
+    moment.updateLocale(craftedLocaleName('../locale/ug-cn'), null);
+    moment.locale('en');
+    assert.equal(
+        indexOf.call(moment.locales(), 'ug-cn'),
+        -1,
+        'moment.updateLocale does not require the "ug-cn" module'
+    );
+    assert.equal(
+        moment.locales().length,
+        localeCount,
+        'moment#locale and moment.updateLocale do not load any module'
+    );
+});
+
+test('do not load locales from crafted non-string names', function (assert) {
+    var payloads = [
+            '../min/locales',
+            '../../../../../../../../../../etc/passwd',
+            '..\\..\\..\\..\\etc\\passwd',
+        ],
+        localeCount = moment.locales().length;
+
+    each(payloads, function (payload) {
+        var crafted = craftedLocaleName(payload);
+
+        moment.locale(crafted);
+        moment.localeData(crafted);
+        moment.defineLocale('crafted-child', { parentLocale: crafted });
+
+        assert.equal(
+            moment.locale(),
+            'en',
+            'keeps the global locale for "' + payload + '"'
+        );
+        assert.equal(
+            indexOf.call(moment.locales(), payload),
+            -1,
+            'does not try to require "' + payload + '"'
+        );
+        assert.equal(
+            moment.locales().length,
+            localeCount,
+            'does not load any module for "' + payload + '"'
+        );
+    });
+
+    // A regular string locale name must still be lazy-loaded from disk.
+    assert.equal(
+        indexOf.call(moment.locales(), 'tzm-latn'),
+        -1,
+        'the built-in "tzm-latn" locale is not loaded yet'
+    );
+    assert.equal(
+        moment.locale('tzm-latn'),
+        'tzm-latn',
+        'still lazy loads a built-in locale by its string name'
+    );
+    assert.equal(
+        moment.locales().length,
+        localeCount + 1,
+        'loads exactly the requested locale module'
+    );
+    moment.locale('en');
 });
 
 test('library setter array of locales', function (assert) {
